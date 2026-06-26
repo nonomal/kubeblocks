@@ -192,9 +192,6 @@ func (r *opsRuntime) GenerateTemplateInstanceNames(clusterName, compName, templa
 }
 
 func (r *opsRuntime) Switchover(ctx context.Context, namespace, clusterName, compName, instanceName, candidateName string) error {
-	if r.multiCluster {
-		return intctrlutil.NewFatalError(fmt.Sprintf(`switchover is not supported for component "%s" with multi-cluster runtime`, compName))
-	}
 	synthesizedComp, err := r.buildSynthesizedCompByCompName(ctx, r.cli, namespace, clusterName, compName)
 	if err != nil {
 		return err
@@ -239,7 +236,7 @@ func (r *opsRuntime) doSwitchover(ctx context.Context, cli client.Reader, synthe
 	}
 
 	// NOTE: switchover is a blocking action currently. May change to non-blocking for better performance.
-	return lfa.Switchover(ctx, cli, nil, switchover.CandidateName)
+	return lfa.Switchover(r.dataContext(), r.dataReader(cli), nil, switchover.CandidateName)
 }
 
 func (r *opsRuntime) buildInstances(namespace, clusterName, compName string, pods []*corev1.Pod) ([]Instance, error) {
@@ -331,6 +328,55 @@ func (r *opsRuntime) dataContext() context.Context {
 		return r.ctx
 	}
 	return r.dataCtx
+}
+
+func (r *opsRuntime) dataReader(cli client.Reader) client.Reader {
+	if !r.multiCluster {
+		return cli
+	}
+	return &opsRuntimeDataReader{
+		runtime: r,
+		reader:  cli,
+	}
+}
+
+type opsRuntimeDataReader struct {
+	runtime *opsRuntime
+	reader  client.Reader
+}
+
+func (r *opsRuntimeDataReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if shouldReadFromControlPlane(obj) {
+		return r.reader.Get(ctx, key, obj, opts...)
+	}
+	opts = append(opts, r.runtime.dataGetOpts...)
+	return r.reader.Get(r.runtime.dataContext(), key, obj, opts...)
+}
+
+func (r *opsRuntimeDataReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if shouldReadListFromControlPlane(list) {
+		return r.reader.List(ctx, list, opts...)
+	}
+	opts = append(opts, r.runtime.dataListOpts...)
+	return r.reader.List(r.runtime.dataContext(), list, opts...)
+}
+
+func shouldReadFromControlPlane(obj client.Object) bool {
+	switch obj.(type) {
+	case *appsv1.Cluster, *appsv1.Component, *workloads.InstanceSet, *workloads.Instance:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldReadListFromControlPlane(list client.ObjectList) bool {
+	switch list.(type) {
+	case *appsv1.ClusterList, *appsv1.ComponentList, *workloads.InstanceSetList, *workloads.InstanceList:
+		return true
+	default:
+		return false
+	}
 }
 
 type defaultWorkload struct {
