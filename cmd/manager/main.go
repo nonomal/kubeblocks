@@ -24,7 +24,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -33,7 +32,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	snapshotv1beta1 "github.com/kubernetes-csi/external-snapshotter/client/v3/apis/volumesnapshot/v1beta1"
 	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
-	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -61,7 +59,6 @@ import (
 	parametersv1alpha1 "github.com/apecloud/kubeblocks/apis/parameters/v1alpha1"
 	tracev1 "github.com/apecloud/kubeblocks/apis/trace/v1"
 	workloadsv1 "github.com/apecloud/kubeblocks/apis/workloads/v1"
-	workloadsv1alpha1 "github.com/apecloud/kubeblocks/apis/workloads/v1alpha1"
 	appscontrollers "github.com/apecloud/kubeblocks/controllers/apps"
 	"github.com/apecloud/kubeblocks/controllers/apps/cluster"
 	"github.com/apecloud/kubeblocks/controllers/apps/component"
@@ -76,6 +73,7 @@ import (
 	"github.com/apecloud/kubeblocks/pkg/constant"
 	"github.com/apecloud/kubeblocks/pkg/controller/instanceset"
 	"github.com/apecloud/kubeblocks/pkg/controller/multicluster"
+	"github.com/apecloud/kubeblocks/pkg/controller/revisionmap"
 	intctrlutil "github.com/apecloud/kubeblocks/pkg/controllerutil"
 	"github.com/apecloud/kubeblocks/pkg/metrics"
 	viper "github.com/apecloud/kubeblocks/pkg/viperx"
@@ -125,7 +123,6 @@ func init() {
 	utilruntime.Must(snapshotv1.AddToScheme(scheme))
 	utilruntime.Must(snapshotv1beta1.AddToScheme(scheme))
 	utilruntime.Must(extensionsv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(workloadsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(workloadsv1.AddToScheme(scheme))
 	utilruntime.Must(experimentalv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(tracev1.AddToScheme(scheme))
@@ -153,13 +150,12 @@ func init() {
 	viper.SetDefault(constant.CfgKeyClusterDefaultResources, `{"zero":true}`)
 	viper.SetDefault(constant.CfgKeyOperationZeroResourceForUnset, true)
 	viper.SetDefault(constant.KubernetesClusterDomainEnv, constant.DefaultDNSDomain)
-	viper.SetDefault(instanceset.MaxPlainRevisionCount, 1024)
+	viper.SetDefault(revisionmap.MaxPlainRevisionCount, 1024)
 	viper.SetDefault(instanceset.FeatureGateIgnorePodVerticalScaling, false)
 	viper.SetDefault(intctrlutil.FeatureGateEnableRuntimeMetrics, false)
 	viper.SetDefault(constant.FeatureGateIgnoreConfigTemplateDefaultMode, false)
 	viper.SetDefault(constant.FeatureGateInPlacePodVerticalScaling, false)
 	viper.SetDefault(constant.I18nResourcesName, "kubeblocks-i18n-resources")
-	viper.SetDefault(constant.APIVersionSupported, "")
 	viper.SetDefault(constant.CfgKBReconcileWorkers, 32)
 	viper.SetDefault(constant.CfgCacheSyncTimeout, 300)
 	viper.SetDefault(constant.CfgClientQPS, 128)
@@ -298,14 +294,6 @@ func validateRequiredToParseConfigs() error {
 		secrets := make([]corev1.LocalObjectReference, 0)
 		if err := json.Unmarshal([]byte(imagePullSecrets), &secrets); err != nil {
 			return err
-		}
-	}
-
-	supportedAPIVersion := viper.GetString(constant.APIVersionSupported)
-	if len(supportedAPIVersion) > 0 {
-		_, err := regexp.Compile(supportedAPIVersion)
-		if err != nil {
-			return errors.Wrap(err, "invalid supported API version")
 		}
 	}
 

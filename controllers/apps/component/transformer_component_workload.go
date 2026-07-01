@@ -102,7 +102,7 @@ func (t *componentWorkloadTransformer) reconcileWorkload(ctx context.Context, cl
 
 	t.buildInstanceSetPlacementAnnotation(comp, protoITS)
 
-	if err := t.reconcileReplicasStatus(ctx, cli, synthesizedComp, runningITS, protoITS); err != nil {
+	if err := t.reconcileReplicasStatus(ctx, cli, synthesizedComp, comp, runningITS, protoITS); err != nil {
 		return err
 	}
 
@@ -122,18 +122,12 @@ func (t *componentWorkloadTransformer) buildInstanceSetPlacementAnnotation(comp 
 }
 
 func (t *componentWorkloadTransformer) reconcileReplicasStatus(ctx context.Context, cli client.Reader,
-	synthesizedComp *component.SynthesizedComponent, runningITS, protoITS *workloads.InstanceSet) error {
-	var (
-		namespace   = synthesizedComp.Namespace
-		clusterName = synthesizedComp.ClusterName
-		compName    = synthesizedComp.Name
-	)
-
+	synthesizedComp *component.SynthesizedComponent, comp *appsv1.Component, runningITS, protoITS *workloads.InstanceSet) error {
 	// HACK: sync replicas status from runningITS to protoITS
 	component.BuildReplicasStatus(runningITS, protoITS)
 
 	replicas, err := func() ([]string, error) {
-		pods, err := component.ListOwnedPods(ctx, cli, namespace, clusterName, compName)
+		pods, err := component.ListOwnedInstances(ctx, cli, comp, runningITS, protoITS)
 		if err != nil {
 			return nil, err
 		}
@@ -356,6 +350,20 @@ func shouldCleanupLegacyConfigManager(oldITS, desiredITS *workloads.InstanceSet)
 	newTemplate := stripLegacyConfigManagerPodTemplate(desiredITS.Spec.Template)
 	if reflect.DeepEqual(oldTemplate, newTemplate) {
 		return false
+	}
+	initChanged, initOK := intctrlutil.OnlyKBManagedContainerImageChanged(oldTemplate.Spec.InitContainers, newTemplate.Spec.InitContainers)
+	containerChanged, containerOK := intctrlutil.OnlyKBManagedContainerImageChanged(oldTemplate.Spec.Containers, newTemplate.Spec.Containers)
+	if initOK && containerOK && (initChanged || containerChanged) {
+		// Container image comparison is intentionally limited to initContainers/containers.
+		// Cleanup is a full template decision, so normalize those lists and keep the legacy
+		// config-manager when the stripped templates have no other meaningful difference.
+		oldTemplateCopy := oldTemplate.DeepCopy()
+		newTemplateCopy := newTemplate.DeepCopy()
+		oldTemplateCopy.Spec.InitContainers = newTemplateCopy.Spec.InitContainers
+		oldTemplateCopy.Spec.Containers = newTemplateCopy.Spec.Containers
+		if reflect.DeepEqual(oldTemplateCopy, newTemplateCopy) {
+			return false
+		}
 	}
 	// Container list or init container changes are evaluated by InstanceSet as pod upgrade changes.
 	// Clean up only when the configured policy will recreate Pods. Otherwise we keep the live template aligned
